@@ -1,12 +1,11 @@
 use wasm_bindgen::prelude::*;
 
-use irmaseal_core::api::*;
 use irmaseal_core::stream::{OpenerSealed, Sealer};
 use irmaseal_core::Error as IRMASealError;
-use irmaseal_core::{Identity, Readable, UserSecretKey, Writable};
+use irmaseal_core::{Identity, PublicKey, Readable, UserSecretKey, Writable};
 
 use js_sys::Error as JsError;
-use js_sys::{Date, Number, Uint8Array};
+use js_sys::{Date, Uint8Array};
 
 use std::cmp::min;
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
@@ -33,7 +32,6 @@ impl From<Error> for JsValue {
 }
 
 // Wrap Cursor<Vec<u8>> to be a Writable
-// TODO: output more concise errors?
 struct Buf {
     pub c: Cursor<Vec<u8>>,
     buf: [u8; 1024],
@@ -77,26 +75,35 @@ impl Readable for Buf {
 }
 
 // Main part.
-
+#[wasm_bindgen]
+pub fn extract_identity(ciphertext: &Uint8Array) -> Result<JsValue, JsValue> {
+    let res = OpenerSealed::new(Buf::new(ciphertext.to_vec()));
+    match res {
+        Ok((identity, _)) => {
+            let json = serde_json::to_string(&identity).unwrap();
+            Ok(JsValue::from_str(&json))
+        }
+        Err(_) => Err(JsError::new("failed to open bytestream").into()),
+    }
+}
 // Encrypts the buffer what for the e-mail address whom using the given
 // parameters.
 #[wasm_bindgen(catch)]
 pub fn encrypt(
     attribute_type: &str,
-    whom: &str,
-    what: &Uint8Array,
-    pars: &str,
+    attribute_value: &str,
+    public_key: &str,
+    plaintext: &Uint8Array,
 ) -> Result<Uint8Array, JsValue> {
     let now = (Date::now() as u64) / 1000;
     let mut rng = rand::thread_rng();
-    let id = Identity::new(now, attribute_type, Some(whom)).map_err(Error::Seal)?;
-    let ppars: Parameters = serde_json::from_str(pars).unwrap();
+    let id = Identity::new(now, attribute_type, Some(attribute_value)).map_err(Error::Seal)?;
+    let pkey = PublicKey::from_base64(public_key).unwrap();
 
     let mut buf = Buf::new(Vec::<u8>::new());
     {
-        let mut sealer =
-            Sealer::new(&id, &ppars.public_key, &mut rng, &mut buf).map_err(Error::Seal)?;
-        sealer.write(&what.to_vec()).map_err(Error::Seal)?;
+        let mut sealer = Sealer::new(&id, &pkey, &mut rng, &mut buf).map_err(Error::Seal)?;
+        sealer.write(&plaintext.to_vec()).map_err(Error::Seal)?;
     }
 
     buf.c.seek(SeekFrom::Start(0)).unwrap();
@@ -105,26 +112,13 @@ pub fn encrypt(
     Ok((&ret[..]).into())
 }
 
-// Extracts timestamp from the identity for the ciphertext.
-// Returns -1 on failure.
-// TODO: Returning Number we loose some precision here, but not all browsers
-//      support BigInt64Array yet, which wasm_bindgen uses to return i64.
-#[wasm_bindgen]
-pub fn extract_timestamp(ciphertext: &Uint8Array) -> Number {
-    let res = OpenerSealed::new(Buf::new(ciphertext.to_vec()));
-    match res {
-        Ok((identity, _)) => (identity.timestamp as f64).into(),
-        Err(_) => (-1).into(),
-    }
-}
-
 // Decrypts ct using the given base64 encoded key.
 // Throws a javascript error if the HMAC does not validate.
 #[wasm_bindgen(catch)]
-pub fn decrypt(ciphertext: &Uint8Array, key: &str) -> Result<Uint8Array, JsValue> {
+pub fn decrypt(ciphertext: &Uint8Array, usk: &str) -> Result<Uint8Array, JsValue> {
     let (_, o) = OpenerSealed::new(Buf::new(ciphertext.to_vec())).map_err(Error::Seal)?;
     let pkey: UserSecretKey =
-        serde_json::from_str(&serde_json::to_string(key).unwrap()[..]).unwrap();
+        serde_json::from_str(&serde_json::to_string(usk).unwrap()[..]).unwrap();
     let mut o = o.unseal(&pkey).map_err(Error::Seal)?;
     let mut buf = Buf::new(Vec::<u8>::new());
 
