@@ -1,14 +1,14 @@
-use wasm_bindgen::prelude::*;
+#![no_std]
 
-use irmaseal_core::stream::{OpenerSealed, Sealer};
+use core::convert::TryFrom;
+use irmaseal_core::util::ArrayVec;
+use irmaseal_core::util::KeySet;
 use irmaseal_core::Error as IRMASealError;
-use irmaseal_core::{Identity, PublicKey, Readable, UserSecretKey, Writable};
-
+use irmaseal_core::{Identity, PublicKey, UserSecretKey};
+use irmaseal_core::{Metadata, MetadataCreateResult, MetadataReader, MetadataReaderResult};
 use js_sys::Error as JsError;
 use js_sys::{Date, Uint8Array};
-
-use std::cmp::min;
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use wasm_bindgen::prelude::*;
 
 pub enum Error {
     Seal(IRMASealError),
@@ -22,115 +22,97 @@ impl From<Error> for JsValue {
                 IRMASealError::IncorrectVersion => "Incorrect version",
                 IRMASealError::ConstraintViolation => "Constraint violation",
                 IRMASealError::FormatViolation => "Format violation",
-                IRMASealError::UpstreamWritableError => "Upstream writable error",
-                IRMASealError::EndOfStream => "End of stream",
-                IRMASealError::PrematureEndError => "Premature end",
             },
         })
         .into()
     }
 }
 
-// Wrap Cursor<Vec<u8>> to be a Writable
-struct Buf {
-    pub c: Cursor<Vec<u8>>,
-    buf: [u8; 1024],
-}
-
-impl Buf {
-    pub fn new(v: Vec<u8>) -> Buf {
-        let c = Cursor::<Vec<u8>>::new(v);
-        let buf = [0u8; 1024];
-        Buf { c, buf }
-    }
-}
-
-impl Writable for Buf {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), IRMASealError> {
-        self.c
-            .write_all(bytes)
-            .or(Err(IRMASealError::UpstreamWritableError))?;
-        Ok(())
-    }
-}
-
-impl Readable for Buf {
-    fn read_byte(&mut self) -> Result<u8, IRMASealError> {
-        let mut x = [0u8; 1];
-        self.c
-            .read_exact(&mut x[..])
-            .or(Err(IRMASealError::EndOfStream))?;
-        Ok(x[0])
-    }
-
-    fn read_bytes(&mut self, n: usize) -> Result<&[u8], IRMASealError> {
-        let len = self.buf.len();
-        let mut ret = &mut self.buf[..min(n, len)];
-        let read = self
-            .c
-            .read(&mut ret)
-            .or(Err(IRMASealError::PrematureEndError))?;
-        Ok(&ret[..read])
-    }
-}
-
-// Main part.
-#[wasm_bindgen]
-pub fn extract_identity(ciphertext: &Uint8Array) -> Result<JsValue, JsValue> {
-    let res = OpenerSealed::new(Buf::new(ciphertext.to_vec()));
-    match res {
-        Ok((identity, _)) => {
-            let json = serde_json::to_string(&identity).unwrap();
-            Ok(JsValue::from_str(&json))
-        }
-        Err(_) => Err(JsError::new("failed to open bytestream").into()),
-    }
-}
-// Encrypts the buffer what for the e-mail address whom using the given
-// parameters.
 #[wasm_bindgen(catch)]
-pub fn encrypt(
+pub fn new_metadata(
     attribute_type: &str,
     attribute_value: &str,
     public_key: &str,
-    plaintext: &Uint8Array,
-) -> Result<Uint8Array, JsValue> {
+) -> Result<JsValue, JsValue> {
     let now = (Date::now() as u64) / 1000;
     let mut rng = rand::thread_rng();
     let id = Identity::new(now, attribute_type, Some(attribute_value)).map_err(Error::Seal)?;
     let pkey = PublicKey::from_base64(public_key).unwrap();
 
-    let mut buf = Buf::new(Vec::<u8>::new());
-    {
-        let mut sealer = Sealer::new(&id, &pkey, &mut rng, &mut buf).map_err(Error::Seal)?;
-        sealer.write(&plaintext.to_vec()).map_err(Error::Seal)?;
-    }
+    let MetadataCreateResult {
+        header,
+        metadata,
+        keys,
+    } = Metadata::new(id, &pkey, &mut rng).map_err(Error::Seal)?;
 
-    buf.c.seek(SeekFrom::Start(0)).unwrap();
-    let mut ret = Vec::new();
-    buf.c.read_to_end(&mut ret).unwrap();
-    Ok((&ret[..]).into())
+    let json = serde_json::to_string(&metadata).unwrap();
+    let metadata_str = JsValue::from_str(&json);
+
+    let arr = Uint8Array::try_from(header.as_slice()).unwrap();
+
+    let obj = js_sys::Object::new();
+    let keys_obj = js_sys::Object::new();
+
+    let aes_key = Uint8Array::new_with_length(32);
+    aes_key.copy_from(&keys.aes_key);
+    let mac_key = Uint8Array::new_with_length(32);
+    mac_key.copy_from(&keys.mac_key);
+
+    js_sys::Reflect::set(&keys_obj, &"aesKey".into(), &aes_key).unwrap();
+    js_sys::Reflect::set(&keys_obj, &"macKey".into(), &mac_key).unwrap();
+
+    js_sys::Reflect::set(&obj, &"header".into(), &arr).unwrap();
+    js_sys::Reflect::set(&obj, &"keys".into(), &keys_obj).unwrap();
+    js_sys::Reflect::set(&obj, &"metadata".into(), &metadata_str).unwrap();
+
+    Ok(obj.into())
 }
 
-// Decrypts ct using the given base64 encoded key.
-// Throws a javascript error if the HMAC does not validate.
 #[wasm_bindgen(catch)]
-pub fn decrypt(ciphertext: &Uint8Array, usk: &str) -> Result<Uint8Array, JsValue> {
-    let (_, o) = OpenerSealed::new(Buf::new(ciphertext.to_vec())).map_err(Error::Seal)?;
-    let pkey: UserSecretKey =
-        serde_json::from_str(&serde_json::to_string(usk).unwrap()[..]).unwrap();
-    let mut o = o.unseal(&pkey).map_err(Error::Seal)?;
-    let mut buf = Buf::new(Vec::<u8>::new());
+pub fn feed(food: &Uint8Array) -> Result<JsValue, JsValue> {
+    let mut reader = MetadataReader::new();
+    let res = reader
+        .write(food.to_vec().as_slice())
+        .map_err(Error::Seal)?;
 
-    o.write_to(&mut buf).map_err(Error::Seal)?;
+    let obj = js_sys::Object::new();
+    match res {
+        MetadataReaderResult::Hungry => {
+            js_sys::Reflect::set(&obj, &"done".into(), &JsValue::from_bool(false)).unwrap();
+        }
+        MetadataReaderResult::Saturated {
+            unconsumed: _,
+            header,
+            metadata,
+        } => {
+            let js_header = Uint8Array::new_with_length(header.len() as u32);
+            js_header.copy_from(&header);
+            let json = serde_json::to_string(&metadata).unwrap();
+            let metadata_str = JsValue::from_str(&json);
 
-    if let false = o.validate() {
-        return Err(JsError::new("HMAC does not validate").into());
+            js_sys::Reflect::set(&obj, &"done".into(), &JsValue::from_bool(true)).unwrap();
+            js_sys::Reflect::set(&obj, &"header".into(), &js_header).unwrap();
+            js_sys::Reflect::set(&obj, &"metadata".into(), &metadata_str).unwrap();
+        }
     }
+    Ok(obj.into())
+}
 
-    buf.c.seek(SeekFrom::Start(0)).unwrap();
-    let mut ret = Vec::new();
-    buf.c.read_to_end(&mut ret).unwrap();
+#[wasm_bindgen(catch)]
+pub fn decaps(ciphertext: &Uint8Array, usk: &str) -> Result<JsValue, JsValue> {
+    let pkey: UserSecretKey =
+        serde_json::from_str(&serde_json::to_string(usk).unwrap()[..]).unwrap(); // this is ugly
+    let cipherbytes = ciphertext.to_vec();
+    let av = ArrayVec::try_from(cipherbytes.as_slice()).unwrap();
+    let keys: KeySet = irmaseal_core::util::decaps(&av, &pkey).map_err(Error::Seal)?;
 
-    Ok((&ret[..]).into())
+    let aes_key = Uint8Array::new_with_length(32);
+    aes_key.copy_from(&keys.aes_key);
+    let mac_key = Uint8Array::new_with_length(32);
+    mac_key.copy_from(&keys.mac_key);
+
+    let keys_obj = js_sys::Object::new();
+    js_sys::Reflect::set(&keys_obj, &"aesKey".into(), &aes_key).unwrap();
+    js_sys::Reflect::set(&keys_obj, &"macKey".into(), &mac_key).unwrap();
+    Ok(keys_obj.into())
 }
