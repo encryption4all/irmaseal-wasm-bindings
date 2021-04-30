@@ -57,8 +57,7 @@ impl WrappedMetadata {
         Ok(WrappedKeyset(key_set))
     }
 
-    #[wasm_bindgen(getter)]
-    pub fn metadata(&self) -> Result<JsValue, JsValue> {
+    pub fn to_json(&self) -> Result<JsValue, JsValue> {
         let json = serde_json::to_string(&self.0).unwrap();
         let obj = js_sys::JSON::parse(&json).unwrap();
 
