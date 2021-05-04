@@ -130,6 +130,11 @@ impl WrappedMetadataReader {
 
         Ok(WrappedMetadataReaderResult(res))
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn safe_write_size(&self) -> usize {
+        self.0.get_safe_write_size()
+    }
 }
 
 #[wasm_bindgen(js_name = MetadataReaderResult)]
