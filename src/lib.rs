@@ -1,11 +1,14 @@
-#![no_std]
-
 use irmaseal_core::util::KeySet;
 use irmaseal_core::Error as IRMASealError;
 use irmaseal_core::{Identity, PublicKey, UserSecretKey};
 use irmaseal_core::{Metadata, MetadataCreateResult, MetadataReader, MetadataReaderResult};
+use irmaseal_core::{
+    IV_SIZE, KEY_SIZE, MAC_IDENTIFIER, MAC_SIZE, SYMMETRIC_CRYPTO_BLOCKSIZE,
+    SYMMETRIC_CRYPTO_IDENTIFIER,
+};
 use js_sys::Error as JsError;
 use js_sys::{Date, Uint8Array};
+use std::string::String;
 use wasm_bindgen::prelude::*;
 
 pub enum Error {
@@ -23,6 +26,42 @@ impl From<Error> for JsValue {
             },
         })
         .into()
+    }
+}
+
+#[wasm_bindgen(inspectable)]
+pub struct EncryptionConstants {
+    pub key_size: usize,
+    pub iv_size: usize,
+    pub block_size: usize,
+    pub mac_size: usize,
+    #[wasm_bindgen(skip)]
+    pub symmetric_id: String,
+    #[wasm_bindgen(skip)]
+    pub verifier_id: String,
+}
+
+#[wasm_bindgen]
+impl EncryptionConstants {
+    #[wasm_bindgen(getter)]
+    pub fn symmetric_id(&self) -> JsValue {
+        JsValue::from_str(&self.symmetric_id)
+    }
+    #[wasm_bindgen(getter)]
+    pub fn verifier_id(&self) -> JsValue {
+        JsValue::from_str(&self.verifier_id)
+    }
+}
+
+#[wasm_bindgen(js_name = ENCRYPTION_CONSTANTS)]
+pub fn constants() -> EncryptionConstants {
+    EncryptionConstants {
+        key_size: KEY_SIZE,
+        iv_size: IV_SIZE,
+        block_size: SYMMETRIC_CRYPTO_BLOCKSIZE,
+        mac_size: MAC_SIZE,
+        symmetric_id: SYMMETRIC_CRYPTO_IDENTIFIER.to_owned(),
+        verifier_id: MAC_IDENTIFIER.to_owned(),
     }
 }
 
