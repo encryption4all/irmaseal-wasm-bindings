@@ -154,7 +154,9 @@ impl WrappedMetadataReaderResult {
     pub fn metadata(&self) -> Result<WrappedMetadata, JsValue> {
         match &self.0 {
             MetadataReaderResult::Saturated { metadata: m, .. } => Ok(WrappedMetadata(m.clone())),
-            MetadataReaderResult::Hungry => Err(JsError::new("not yet satisfied").into()),
+            MetadataReaderResult::Hungry => {
+                Err(JsError::new("metadata reader is not yet satisfied").into())
+            }
         }
     }
 
@@ -166,7 +168,9 @@ impl WrappedMetadataReaderResult {
                 js_header.copy_from(&h);
                 Ok(js_header.into())
             }
-            MetadataReaderResult::Hungry => Err(JsError::new("not yet satisfied").into()),
+            MetadataReaderResult::Hungry => {
+                Err(JsError::new("metadata reader is not yet satisfied").into())
+            }
         }
     }
 }
