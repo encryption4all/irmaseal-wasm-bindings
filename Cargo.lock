@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "irmaseal-wasm-bindings"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "irmaseal-core",
  "js-sys",
