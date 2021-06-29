@@ -53,7 +53,7 @@ impl EncryptionConstants {
     }
 }
 
-#[wasm_bindgen(js_name = ENCRYPTION_CONSTANTS)]
+#[wasm_bindgen]
 pub fn constants() -> EncryptionConstants {
     EncryptionConstants {
         key_size: KEY_SIZE,
